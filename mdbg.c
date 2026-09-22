@@ -2,10 +2,17 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <elf.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+#define MAX_LENGTH  1024
+#define NOT_IMPLEMENTED(arg) \
+    fprintf(stdout, "NOT IMPLEMENTED:%d: %s\n", __LINE__, arg);
+
+const char *prompt = "(mdbg) ";
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
@@ -17,6 +24,31 @@ int main(int argc, char **argv)
 
     if (!check_if_elf(argv[1]))
         die("Error: provided file '%s' is not ELF", argv[1]);
+
+    char line[MAX_LENGTH];
+    while (true) {
+        fputs(prompt, stdout);
+
+        char *ret = fgets(line, sizeof(line), stdin);
+        if (!ret)
+            break;
+
+        line[strcspn(line, "\n")] = '\0';
+        if (!strcmp(line, "quit") || !strcmp(line, "q"))
+            break;
+
+        if (!strcmp(line, "run") || !strcmp(line, "r")) {
+            NOT_IMPLEMENTED("run command");
+        } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
+                   !strcmp(line, "c")) {
+            NOT_IMPLEMENTED("continue command");
+        } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
+                   !strcmp(line, "b")) {
+            NOT_IMPLEMENTED("breakpoint command");
+        } else {
+            fprintf(stdout, "Unknown command '%s'\n", line);
+        }
+    }
 
     return 0;
 }
