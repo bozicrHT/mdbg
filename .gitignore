@@ -1,0 +1,9 @@
+build/
+mdbg
+
+*.o
+*~
+*.swp
+*.in
+*.out
+*.md
