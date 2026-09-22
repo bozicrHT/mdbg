@@ -8,6 +8,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <sys/wait.h>
+#include <sys/ptrace.h>
+
 #define MAX_LENGTH  1024
 #define NOT_IMPLEMENTED(arg) \
     fprintf(stdout, "NOT IMPLEMENTED:%d: %s\n", __LINE__, arg);
@@ -38,7 +41,34 @@ int main(int argc, char **argv)
             break;
 
         if (!strcmp(line, "run") || !strcmp(line, "r")) {
-            NOT_IMPLEMENTED("run command");
+
+            pid_t pid;
+            if ((pid = fork()) < 0)
+                die("Error: fork failed in '%s'", __func__);
+
+            if (pid == 0) { // Child process, execute debugee
+                if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0)
+                    die("Error: tracing failed in '%s'", __func__);
+
+                if (execl(argv[1], argv[1], NULL) < 0)
+                    die("Error: execl failed in '%s'", __func__);
+            }
+
+            int status;
+            if (waitpid(pid, &status, 0) < 0)
+                die("Error: waitpid failed in '%s'", __func__);
+
+            if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP)
+                die("Error: Unexpected initial process state");
+
+            // Debugee is stopped
+            printf("Child stopped, pid = %d (continuing...)\n", pid);
+            if (ptrace(PTRACE_CONT, pid, NULL, NULL) < 0)
+                die("Error: PTRACE_CONT failed in '%s'", __func__);
+
+            if (waitpid(pid, &status, 0) < 0)
+                die("waitpid failed");
+
         } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
                    !strcmp(line, "c")) {
             NOT_IMPLEMENTED("continue command");
