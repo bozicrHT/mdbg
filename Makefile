@@ -5,3 +5,8 @@ IN		= mdbg.c
 
 $(OUT): $(IN)
 	$(CC) $(CFLAGS) $< -o $@
+
+.PHONY: test
+
+test: test.c
+	$(CC) -g $< -o $@

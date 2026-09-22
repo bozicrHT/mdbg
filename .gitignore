@@ -1,5 +1,6 @@
 build/
 mdbg
+test
 
 *.o
 *~
