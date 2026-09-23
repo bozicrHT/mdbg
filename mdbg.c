@@ -1,3 +1,4 @@
+#define _GNU_SOURCE // for 'sigabbrev_np'
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -7,6 +8,7 @@
 #include <elf.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include <sys/wait.h>
 #include <sys/ptrace.h>
@@ -16,6 +18,8 @@
     fprintf(stdout, "NOT IMPLEMENTED:%d: %s\n", __LINE__, arg);
 
 const char *prompt = "(mdbg) ";
+
+static void wait_for_debugee(pid_t pid);
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
@@ -62,12 +66,11 @@ int main(int argc, char **argv)
                 die("Error: Unexpected initial process state");
 
             // Debugee is stopped
-            printf("Child stopped, pid = %d (continuing...)\n", pid);
+            printf("[Inferior (%d) stopped by 'TRACEME' call, continuing]\n", pid);
             if (ptrace(PTRACE_CONT, pid, NULL, NULL) < 0)
                 die("Error: PTRACE_CONT failed in '%s'", __func__);
 
-            if (waitpid(pid, &status, 0) < 0)
-                die("waitpid failed");
+            wait_for_debugee(pid);
 
         } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
                    !strcmp(line, "c")) {
@@ -81,6 +84,23 @@ int main(int argc, char **argv)
     }
 
     return 0;
+}
+
+static void
+wait_for_debugee(pid_t pid)
+{
+    int status, options = 0;
+    if (waitpid(pid, &status, options) < 0)
+        die("Error: waitpid failed in '%s'", __func__);
+
+    if (WIFEXITED(status)) {
+        printf("[Inferior (%d) exited normally (code %d)]\n",
+                pid, WEXITSTATUS(status));
+    } else if (WIFSTOPPED(status)) {
+        int sig = WSTOPSIG(status);
+        printf("[Inferior (%d) stopped by signal %d (%s)]\n",
+                pid, sig, sigabbrev_np(sig));
+    }
 }
 
 static bool
