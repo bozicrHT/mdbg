@@ -26,7 +26,10 @@ typedef enum {
     EXITED,
 } Process_State;
 Process_State g_pstate = NO_PROCESS;
+pid_t g_debugee_pid = -1;
 
+static void run_program(const char *file_path);
+static void continue_execution(void);
 static void wait_for_debugee(pid_t pid);
 
 static void die(const char *fmt, ...);
@@ -40,7 +43,6 @@ int main(int argc, char **argv)
     if (!check_if_elf(argv[1]))
         die("Error: provided file '%s' is not ELF", argv[1]);
 
-    pid_t pid;
     char line[MAX_LENGTH];
     while (true) {
         fputs(prompt, stdout);
@@ -55,47 +57,12 @@ int main(int argc, char **argv)
 
         if (!strcmp(line, "run") || !strcmp(line, "r")) {
 
-            if ((pid = fork()) < 0)
-                die("Error: fork failed in '%s'", __func__);
-
-            if (pid == 0) { // Child process, execute debugee
-                if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0)
-                    die("Error: tracing failed in '%s'", __func__);
-
-                if (execl(argv[1], argv[1], NULL) < 0)
-                    die("Error: execl failed in '%s'", __func__);
-            }
-
-            int status;
-            if (waitpid(pid, &status, 0) < 0)
-                die("Error: waitpid failed in '%s'", __func__);
-
-            if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP)
-                die("Error: Unexpected initial process state");
-
-            // Debugee is stopped
-            printf("[Inferior (%d) stopped by 'TRACEME' call, continuing]\n", pid);
-            if (ptrace(PTRACE_CONT, pid, NULL, NULL) < 0)
-                die("Error: PTRACE_CONT failed in '%s'", __func__);
-
-            g_pstate = RUNNING;
-
-            wait_for_debugee(pid);
+            run_program(argv[1]);
 
         } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
                    !strcmp(line, "c")) {
 
-            if (g_pstate != STOPPED) {
-                fprintf(stdout, "Inferior is not stopped.\n");
-                continue;
-            }
-
-            if (ptrace(PTRACE_CONT, pid, NULL, NULL) < 0)
-                die("Error: PTRACE_CONT failed in '%s'", __func__);
-
-
-            g_pstate = RUNNING;
-            wait_for_debugee(pid);
+            continue_execution();
 
         } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
                    !strcmp(line, "b")) {
@@ -125,6 +92,54 @@ wait_for_debugee(pid_t pid)
                 pid, sig, sigabbrev_np(sig));
         g_pstate = STOPPED;
     }
+}
+
+static void
+continue_execution(void)
+{
+    if (g_pstate != STOPPED) {
+        fprintf(stdout, "Inferior is not stopped.\n");
+        return;
+    }
+
+    if (ptrace(PTRACE_CONT, g_debugee_pid, NULL, NULL) < 0)
+        die("Error: PTRACE_CONT failed in '%s'", __func__);
+
+
+    g_pstate = RUNNING;
+    wait_for_debugee(g_debugee_pid);
+}
+
+static void
+run_program(const char *file_path)
+{
+    if ((g_debugee_pid = fork()) < 0)
+        die("Error: fork failed in '%s'", __func__);
+
+    if (g_debugee_pid == 0) { // Child process, execute debugee
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0)
+            die("Error: tracing failed in '%s'", __func__);
+
+        if (execl(file_path, file_path, NULL) < 0)
+            die("Error: execl failed in '%s'", __func__);
+    }
+
+    int status;
+    if (waitpid(g_debugee_pid, &status, 0) < 0)
+        die("Error: waitpid failed in '%s'", __func__);
+
+    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP)
+        die("Error: Unexpected initial process state");
+
+    // Debugee is stopped
+    printf("[Inferior (%d) stopped by 'TRACEME' call, continuing]\n", g_debugee_pid);
+    if (ptrace(PTRACE_CONT, g_debugee_pid, NULL, NULL) < 0)
+        die("Error: PTRACE_CONT failed in '%s'", __func__);
+
+    g_pstate = RUNNING;
+
+    wait_for_debugee(g_debugee_pid);
+
 }
 
 static bool
