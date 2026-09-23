@@ -19,6 +19,14 @@
 
 const char *prompt = "(mdbg) ";
 
+typedef enum {
+    NO_PROCESS,
+    RUNNING,
+    STOPPED,
+    EXITED,
+} Process_State;
+Process_State g_pstate = NO_PROCESS;
+
 static void wait_for_debugee(pid_t pid);
 
 static void die(const char *fmt, ...);
@@ -32,6 +40,7 @@ int main(int argc, char **argv)
     if (!check_if_elf(argv[1]))
         die("Error: provided file '%s' is not ELF", argv[1]);
 
+    pid_t pid;
     char line[MAX_LENGTH];
     while (true) {
         fputs(prompt, stdout);
@@ -46,7 +55,6 @@ int main(int argc, char **argv)
 
         if (!strcmp(line, "run") || !strcmp(line, "r")) {
 
-            pid_t pid;
             if ((pid = fork()) < 0)
                 die("Error: fork failed in '%s'", __func__);
 
@@ -70,11 +78,25 @@ int main(int argc, char **argv)
             if (ptrace(PTRACE_CONT, pid, NULL, NULL) < 0)
                 die("Error: PTRACE_CONT failed in '%s'", __func__);
 
+            g_pstate = RUNNING;
+
             wait_for_debugee(pid);
 
         } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
                    !strcmp(line, "c")) {
-            NOT_IMPLEMENTED("continue command");
+
+            if (g_pstate != STOPPED) {
+                fprintf(stdout, "Inferior is not stopped.\n");
+                continue;
+            }
+
+            if (ptrace(PTRACE_CONT, pid, NULL, NULL) < 0)
+                die("Error: PTRACE_CONT failed in '%s'", __func__);
+
+
+            g_pstate = RUNNING;
+            wait_for_debugee(pid);
+
         } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
                    !strcmp(line, "b")) {
             NOT_IMPLEMENTED("breakpoint command");
@@ -96,10 +118,12 @@ wait_for_debugee(pid_t pid)
     if (WIFEXITED(status)) {
         printf("[Inferior (%d) exited normally (code %d)]\n",
                 pid, WEXITSTATUS(status));
+        g_pstate = EXITED;
     } else if (WIFSTOPPED(status)) {
         int sig = WSTOPSIG(status);
         printf("[Inferior (%d) stopped by signal %d (%s)]\n",
                 pid, sig, sigabbrev_np(sig));
+        g_pstate = STOPPED;
     }
 }
 
