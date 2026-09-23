@@ -31,6 +31,7 @@ pid_t g_debugee_pid = -1;
 static void run_program(const char *file_path);
 static void continue_execution(void);
 static void wait_for_debugee(pid_t pid);
+static void kill_debugee(void);
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
@@ -67,6 +68,10 @@ int main(int argc, char **argv)
         } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
                    !strcmp(line, "b")) {
             NOT_IMPLEMENTED("breakpoint command");
+        } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
+
+            kill_debugee();
+
         } else {
             fprintf(stdout, "Unknown command '%s'\n", line);
         }
@@ -160,6 +165,41 @@ check_if_elf(const char *file_path)
         return true;
 
     return false;
+}
+
+static void
+kill_debugee(void)
+{
+    if (g_pstate != RUNNING && g_pstate != STOPPED) {
+        fprintf(stdout, "The program is not being run.\n");
+        return;
+    }
+
+    char answer[8];
+    fprintf(stdout, "Kill the program being debugged? (y or n) ");
+    if (!fgets(answer, sizeof(answer), stdin))
+        return;
+
+    if (answer[0] != 'Y' && answer[0] != 'y') {
+        printf("Program not killed\n");
+        return;
+    }
+
+    printf("Inferior 1 [process %d] will be killed.\n", g_debugee_pid);
+
+    // SIGKILL terminates it regardless of whether it's running or stopped.
+    if (kill(g_debugee_pid, SIGKILL) < 0)
+        die("Error: SIGSTOP falied");
+
+    // waitpid after SIGKILL is good: you're reaping the child.
+    // That's important because killing a child doesn't automatically
+    // remove its process entry; the parent needs to waitpid() it.
+    if (waitpid(g_debugee_pid, NULL, 0) < 0)
+        die("Error: waitpid failed during cleanup");
+
+
+    g_debugee_pid = -1;
+    g_pstate = NO_PROCESS;
 }
 
 static void
