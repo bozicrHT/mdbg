@@ -28,10 +28,12 @@ typedef enum {
 Process_State g_pstate = NO_PROCESS;
 pid_t g_debugee_pid = -1;
 
+static pid_t launch(const char *file_path);
 static void run_program(const char *file_path);
+static bool cleanup(pid_t pid);
 static void continue_execution(void);
 static void wait_for_debugee(pid_t pid);
-static void kill_debugee(void);
+static bool kill_debugee(void);
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
@@ -70,7 +72,7 @@ int main(int argc, char **argv)
             NOT_IMPLEMENTED("breakpoint command");
         } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
 
-            kill_debugee();
+            (void)kill_debugee();
 
         } else {
             fprintf(stdout, "Unknown command '%s'\n", line);
@@ -115,13 +117,28 @@ continue_execution(void)
     wait_for_debugee(g_debugee_pid);
 }
 
-static void
-run_program(const char *file_path)
+static bool
+cleanup(pid_t pid)
 {
-    if ((g_debugee_pid = fork()) < 0)
+    if (pid <= 0)
+        return false;
+
+    if (g_pstate == RUNNING || g_pstate == STOPPED) {
+        printf("A debugging session is active.\n");
+        return kill_debugee();
+    }
+
+    return false;
+}
+
+static pid_t
+launch(const char *file_path)
+{
+    pid_t pid;
+    if ((pid = fork()) < 0)
         die("Error: fork failed in '%s'", __func__);
 
-    if (g_debugee_pid == 0) { // Child process, execute debugee
+    if (pid == 0) { // Child process, execute debugee
         if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0)
             die("Error: tracing failed in '%s'", __func__);
 
@@ -130,21 +147,51 @@ run_program(const char *file_path)
     }
 
     int status;
-    if (waitpid(g_debugee_pid, &status, 0) < 0)
+    if (waitpid(pid, &status, 0) < 0)
         die("Error: waitpid failed in '%s'", __func__);
 
     if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP)
         die("Error: Unexpected initial process state");
 
-    // Debugee is stopped
-    printf("[Inferior (%d) stopped by 'TRACEME' call, continuing]\n", g_debugee_pid);
-    if (ptrace(PTRACE_CONT, g_debugee_pid, NULL, NULL) < 0)
-        die("Error: PTRACE_CONT failed in '%s'", __func__);
+    g_pstate = STOPPED;
+    return pid;
+}
 
-    g_pstate = RUNNING;
+static void
+run_program(const char *file_path)
+{
+    // No process -> create one
+    // Previous process died -> create a new one
+    if (g_pstate == NO_PROCESS || g_pstate == EXITED) {
+        g_debugee_pid = launch(file_path);
 
-    wait_for_debugee(g_debugee_pid);
+        if (ptrace(PTRACE_CONT, g_debugee_pid, NULL, NULL) < 0)
+            die("Error: PTRACE_CONT failed in '%s'", __func__);
 
+        g_pstate = RUNNING;
+
+        wait_for_debugee(g_debugee_pid);
+    }
+    //Existing stopped process -> restart it
+    // For now, simply kill it and create a new inferior
+    else if (g_pstate == STOPPED) { // STOPPED
+
+        // FIXME: Hacky, refactor it
+        if (cleanup(g_debugee_pid)) {
+            g_debugee_pid = launch(file_path);
+
+            if (ptrace(PTRACE_CONT, g_debugee_pid, NULL, NULL) < 0)
+                die("Error: PTRACE_CONT failed in '%s'", __func__);
+
+            g_pstate = RUNNING;
+
+            wait_for_debugee(g_debugee_pid);
+        }
+
+    } else if (g_pstate == RUNNING) {
+        printf("The program is already running.\n");
+        return;
+    }
 }
 
 static bool
@@ -167,25 +214,25 @@ check_if_elf(const char *file_path)
     return false;
 }
 
-static void
+static bool
 kill_debugee(void)
 {
     if (g_pstate != RUNNING && g_pstate != STOPPED) {
         fprintf(stdout, "The program is not being run.\n");
-        return;
+        return false;
     }
 
     char answer[8];
     fprintf(stdout, "Kill the program being debugged? (y or n) ");
     if (!fgets(answer, sizeof(answer), stdin))
-        return;
+        return false;
 
     if (answer[0] != 'Y' && answer[0] != 'y') {
-        printf("Program not killed\n");
-        return;
+        printf("Program not killed.\n");
+        return false;
     }
 
-    printf("Inferior 1 [process %d] will be killed.\n", g_debugee_pid);
+    printf("[Inferior (%d) will be killed]\n", g_debugee_pid);
 
     // SIGKILL terminates it regardless of whether it's running or stopped.
     if (kill(g_debugee_pid, SIGKILL) < 0)
@@ -200,6 +247,8 @@ kill_debugee(void)
 
     g_debugee_pid = -1;
     g_pstate = NO_PROCESS;
+
+    return true;
 }
 
 static void
