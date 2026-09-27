@@ -70,6 +70,7 @@ static const Register print_reg_order[] = {
 
 static void print_registers(pid_t pid);
 static void print_register_by_name(pid_t pid, const char *reg_name);
+static void set_register_value(pid_t pid, const char *reg_name, uint64_t value);
 static uint64_t get_register_value(pid_t pid, Register reg);
 static Register find_register(const char *reg_name);
 
@@ -146,6 +147,16 @@ int main(int argc, char **argv)
             }
 
             print_register_by_name(g_debuggee_pid, reg_name);
+
+        } else if (is_prefix(line, "set")) {
+
+            char cmd[16];
+            char reg_name[16];
+            uint64_t value;
+
+            sscanf(line, "%15s %15s %ld", cmd, reg_name, &value);
+
+            set_register_value(g_debuggee_pid, reg_name, value);
 
         } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
 
@@ -380,6 +391,26 @@ void print_register_by_name(pid_t pid, const char *reg_name)
     else {
         uint64_t val = get_register_value(pid, reg);
         printf("%-15s %#-20lx %lu\n", g_register_descriptors[reg].name, val, val);
+    }
+}
+
+static
+void set_register_value(pid_t pid, const char *reg_name, uint64_t value)
+{
+    Register reg = find_register(reg_name);
+    if (reg == INVALID)
+        printf("Invalid register '%s'\n", reg_name);
+    else {
+        struct user_regs_struct regs;
+        if (ptrace(PTRACE_GETREGS, pid, NULL, &regs) < 0)
+            die("Error: reading registers failed in '%s'", __func__);
+
+        ((uint64_t *)&regs)[reg] = value;
+
+        if (ptrace(PTRACE_SETREGS, pid, NULL, &regs) < 0)
+            die("Error: writing registers failed in '%s'", __func__);
+
+        printf("Register '%s' set to %ld\n", reg_name, value);
     }
 }
 
