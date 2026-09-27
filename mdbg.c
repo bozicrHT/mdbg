@@ -55,8 +55,12 @@ int main(int argc, char **argv)
             break;
 
         line[strcspn(line, "\n")] = '\0';
-        if (!strcmp(line, "quit") || !strcmp(line, "q"))
+        if (!strcmp(line, "quit") || !strcmp(line, "q")) {
+            if (g_pstate == RUNNING || g_pstate == STOPPED)
+                if (!kill_debugee())
+                    continue;
             break;
+        }
 
         if (!strcmp(line, "run") || !strcmp(line, "r")) {
 
