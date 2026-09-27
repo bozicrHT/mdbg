@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
+#include <ctype.h>
 
 #include <elf.h>
 #include <fcntl.h>
@@ -68,6 +69,9 @@ static const Register print_reg_order[] = {
 };
 
 static void print_registers(pid_t pid);
+static void print_register_by_name(pid_t pid, const char *reg_name);
+static uint64_t get_register_value(pid_t pid, Register reg);
+static Register find_register(const char *reg_name);
 
 typedef enum {
     NO_PROCESS,
@@ -87,6 +91,7 @@ static bool kill_debuggee(void);
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
+static bool is_prefix(const char *line, const char *prefix);
 
 int main(int argc, char **argv)
 {
@@ -112,6 +117,9 @@ int main(int argc, char **argv)
             break;
         }
 
+        if (strlen(line) == 0)
+            continue;
+
         if (!strcmp(line, "run") || !strcmp(line, "r")) {
 
             run_program(argv[1]);
@@ -126,6 +134,19 @@ int main(int argc, char **argv)
             NOT_IMPLEMENTED("breakpoint command");
         } else if (!strcmp(line, "regs")) {
             print_registers(g_debuggee_pid);
+        } else if (is_prefix(line, "reg")) {
+
+            char cmd[16];
+            char reg_name[16];
+            sscanf(line, "%15s %15s", cmd, reg_name);
+
+            if (!strcmp(reg_name, "")) {
+                printf("usage: reg <register>\n");
+                continue;
+            }
+
+            print_register_by_name(g_debuggee_pid, reg_name);
+
         } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
 
             (void)kill_debuggee();
@@ -327,6 +348,59 @@ void print_registers(pid_t pid)
         uint64_t val = values[reg];
         printf("%-15s %#-20lx %lu\n", g_register_descriptors[reg].name, val, val);
     }
+}
+
+static uint64_t
+get_register_value(pid_t pid, Register reg)
+{
+    struct user_regs_struct regs;
+    if (ptrace(PTRACE_GETREGS, pid, NULL, &regs) < 0)
+        die("Error: reading registers failed in '%s'", __func__);
+
+    const uint64_t *values = (uint64_t *)(&regs);
+    return values[reg];
+}
+
+static
+Register find_register(const char *reg_name)
+{
+    for (int i = 0; i < NUM_OF_REGS; i++)
+        if (!strcmp(g_register_descriptors[i].name, reg_name))
+            return g_register_descriptors[i].reg;
+
+    return INVALID;
+}
+
+static
+void print_register_by_name(pid_t pid, const char *reg_name)
+{
+    Register reg = find_register(reg_name);
+    if (reg == INVALID)
+        printf("Invalid register '%s'\n", reg_name);
+    else {
+        uint64_t val = get_register_value(pid, reg);
+        printf("%-15s %#-20lx %lu\n", g_register_descriptors[reg].name, val, val);
+    }
+}
+
+static
+bool is_prefix(const char *line, const char *prefix)
+{
+    while (isspace(*line))
+        line++;
+
+    if (*line == '\0')
+        return false;
+
+    while (!line) {
+        if (*prefix == '\0' || *line != *prefix)
+            return false;
+
+        prefix++;
+        line++;
+    }
+
+    return true;
 }
 
 static void
