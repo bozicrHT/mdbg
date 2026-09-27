@@ -1,16 +1,20 @@
 #include <stdio.h>
 
+int sum(int a, int b)
+{
+    asm("int3");
+
+    int sum = 0;
+    for (int i = a; i <= b; i++)
+        sum += i;
+    return sum;
+}
+
 int main(void)
 {
     puts("Hello, World");
 
-    int sum = 0;
-    for (int i = 0; i < 100; i++)
-        sum += (i+1);
-
-    printf(">Hitting breakpoint from 'test.c'<\n");
-    asm("int3");
-    printf("Sum is %d\n", sum);
+    printf("Sum is %d\n", sum(1, 100));
 
     return 0;
 }
