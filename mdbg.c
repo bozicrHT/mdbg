@@ -389,11 +389,8 @@ bool is_prefix(const char *line, const char *prefix)
     while (isspace(*line))
         line++;
 
-    if (*line == '\0')
-        return false;
-
-    while (!line) {
-        if (*prefix == '\0' || *line != *prefix)
+    while (*prefix != '\0') {
+        if (*line != *prefix)
             return false;
 
         prefix++;
