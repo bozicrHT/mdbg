@@ -86,11 +86,13 @@ pid_t g_debuggee_pid = -1;
 
 static pid_t launch(const char *file_path);
 static void run_program(const char *file_path);
-static bool cleanup(pid_t pid);
 static void continue_execution(void);
 static void wait_for_debuggee(pid_t pid);
 static bool kill_debuggee(void);
 static void handle_command(const char *line);
+
+static bool process_is_alive();
+static bool process_is_stopped();
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
@@ -115,10 +117,11 @@ int main(int argc, char **argv)
             break;
 
         line[strcspn(line, "\n")] = '\0';
+
         if (!strcmp(line, "quit") || !strcmp(line, "q")) {
-            if (g_pstate == RUNNING || g_pstate == STOPPED)
-                if (!kill_debuggee())
-                    continue;
+            if (process_is_alive() && !kill_debuggee())
+                continue;
+
             break;
         }
 
@@ -193,18 +196,24 @@ wait_for_debuggee(pid_t pid)
         printf("[Inferior (%d) exited normally (code %d)]\n",
                 pid, WEXITSTATUS(status));
         g_pstate = EXITED;
-    } else if (WIFSTOPPED(status)) {
+        return;
+    }
+
+    if (WIFSTOPPED(status)) {
         int sig = WSTOPSIG(status);
         printf("[Inferior (%d) stopped by signal %d (%s)]\n",
                 pid, sig, sigabbrev_np(sig));
         g_pstate = STOPPED;
+        return;
     }
+
+    die("Unexpected waitpid status '%d'", status);
 }
 
 static void
 continue_execution(void)
 {
-    if (g_pstate != STOPPED) {
+    if (!process_is_stopped()) {
         fprintf(stdout, "Inferior is not stopped.\n");
         return;
     }
@@ -215,20 +224,6 @@ continue_execution(void)
 
     g_pstate = RUNNING;
     wait_for_debuggee(g_debuggee_pid);
-}
-
-static bool
-cleanup(pid_t pid)
-{
-    if (pid <= 0)
-        return false;
-
-    if (g_pstate == RUNNING || g_pstate == STOPPED) {
-        printf("A debugging session is active.\n");
-        return kill_debuggee();
-    }
-
-    return false;
 }
 
 static pid_t
@@ -260,38 +255,29 @@ launch(const char *file_path)
 static void
 run_program(const char *file_path)
 {
-    // No process -> create one
-    // Previous process died -> create a new one
-    if (g_pstate == NO_PROCESS || g_pstate == EXITED) {
-        g_debuggee_pid = launch(file_path);
-
-        if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
-            die("Error: PTRACE_CONT failed in '%s'", __func__);
-
-        g_pstate = RUNNING;
-
-        wait_for_debuggee(g_debuggee_pid);
-    }
-    //Existing stopped process -> restart it
-    // For now, simply kill it and create a new inferior
-    else if (g_pstate == STOPPED) { // STOPPED
-
-        // FIXME: Hacky, refactor it
-        if (cleanup(g_debuggee_pid)) {
-            g_debuggee_pid = launch(file_path);
-
-            if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
-                die("Error: PTRACE_CONT failed in '%s'", __func__);
-
-            g_pstate = RUNNING;
-
-            wait_for_debuggee(g_debuggee_pid);
-        }
-
-    } else if (g_pstate == RUNNING) {
-        printf("The program is already running.\n");
+    if (g_pstate == RUNNING) {
+        puts("The program is already running.");
         return;
     }
+
+    //Existing stopped process -> restart it
+    // For now, simply kill it and create a new inferior
+    if (process_is_stopped()) {
+        if (!kill_debuggee())
+                return;
+    }
+
+    // No process -> create one
+    // Previous process died -> create a new one
+
+    g_debuggee_pid = launch(file_path);
+
+    if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
+        die("Error: PTRACE_CONT failed in '%s'", __func__);
+
+    g_pstate = RUNNING;
+
+    wait_for_debuggee(g_debuggee_pid);
 }
 
 static bool
@@ -317,7 +303,7 @@ check_if_elf(const char *file_path)
 static bool
 kill_debuggee(void)
 {
-    if (g_pstate != RUNNING && g_pstate != STOPPED) {
+    if (!process_is_alive()) {
         fprintf(stdout, "The program is not being run.\n");
         return false;
     }
@@ -336,7 +322,7 @@ kill_debuggee(void)
 
     // SIGKILL terminates it regardless of whether it's running or stopped.
     if (kill(g_debuggee_pid, SIGKILL) < 0)
-        die("Error: SIGSTOP falied");
+        die("Error: SIGKILL falied");
 
     // waitpid after SIGKILL is good: you're reaping the child.
     // That's important because killing a child doesn't automatically
@@ -424,6 +410,19 @@ void set_register_value(pid_t pid, const char *reg_name, uint64_t value)
 
         printf("Register '%s' set to %ld\n", reg_name, value);
     }
+}
+
+static
+bool process_is_alive()
+{
+    return g_pstate == RUNNING ||
+           g_pstate == STOPPED;
+}
+
+static
+bool process_is_stopped()
+{
+    return g_pstate == STOPPED;
 }
 
 static
