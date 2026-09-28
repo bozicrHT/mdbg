@@ -85,7 +85,7 @@ Process_State g_pstate = NO_PROCESS;
 pid_t g_debuggee_pid = -1;
 
 static pid_t launch(const char *file_path);
-static void run_program(const char *file_path);
+static void run_program(void);
 static void continue_execution(void);
 static void wait_for_debuggee(pid_t pid);
 static bool kill_debuggee(void);
@@ -96,7 +96,7 @@ static bool process_is_stopped();
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
-static bool is_prefix(const char *line, const char *prefix);
+static bool is_command(const char *line, const char *command);
 
 int main(int argc, char **argv)
 {
@@ -135,26 +135,32 @@ int main(int argc, char **argv)
 static
 void handle_command(const char *line)
 {
-    if (!strcmp(line, "run") || !strcmp(line, "r")) {
+    if (is_command(line, "run") || is_command(line, "r")) {
+        run_program();
+        return;
+    }
 
-        run_program(debuggee_path);
-
-    } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
-            !strcmp(line, "c")) {
-
+    if (is_command(line, "continue") ||
+        is_command(line, "cont") ||
+        is_command(line, "c")) {
         continue_execution();
+        return;
+    }
 
-    } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
-            !strcmp(line, "b")) {
+    if (is_command(line, "breakpoint") ||
+        is_command(line, "break") ||
+        is_command(line, "b")) {
 
         NOT_IMPLEMENTED("breakpoint command");
+        return;
+    }
 
-    } else if (!strcmp(line, "regs")) {
-
+    if (is_command(line, "regs")) {
         print_registers(g_debuggee_pid);
+        return;
+    }
 
-    } else if (is_prefix(line, "reg")) {
-
+    if (is_command(line, "reg")) {
         char cmd[16];
         char reg_name[16];
         sscanf(line, "%15s %15s", cmd, reg_name);
@@ -166,23 +172,28 @@ void handle_command(const char *line)
 
         print_register_by_name(g_debuggee_pid, reg_name);
 
-    } else if (is_prefix(line, "set")) {
+        return;
+    }
+
+    if (is_command(line, "set")) {
 
         char cmd[16];
         char reg_name[16];
         uint64_t value;
 
         sscanf(line, "%15s %15s %ld", cmd, reg_name, &value);
-
         set_register_value(g_debuggee_pid, reg_name, value);
 
-    } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
-
-        (void)kill_debuggee();
-
-    } else {
-        fprintf(stdout, "Unknown command '%s'\n", line);
+        return;
     }
+
+    if (is_command(line, "kill") ||
+        is_command(line, "k")) {
+        (void)kill_debuggee();
+        return;
+    }
+
+    printf("Unknown command '%s'\n", line);
 }
 
 static void
@@ -253,7 +264,7 @@ launch(const char *file_path)
 }
 
 static void
-run_program(const char *file_path)
+run_program(void)
 {
     if (g_pstate == RUNNING) {
         puts("The program is already running.");
@@ -270,7 +281,7 @@ run_program(const char *file_path)
     // No process -> create one
     // Previous process died -> create a new one
 
-    g_debuggee_pid = launch(file_path);
+    g_debuggee_pid = launch(debuggee_path);
 
     if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
         die("Error: PTRACE_CONT failed in '%s'", __func__);
@@ -426,20 +437,19 @@ bool process_is_stopped()
 }
 
 static
-bool is_prefix(const char *line, const char *prefix)
+bool is_command(const char *line, const char *command)
 {
     while (isspace(*line))
         line++;
 
-    while (*prefix != '\0') {
-        if (*line != *prefix)
-            return false;
+    size_t command_length = strlen(command);
 
-        prefix++;
-        line++;
-    }
+    if (strncmp(line, command, command_length) != 0)
+        return false;
 
-    return true;
+    char next = line[command_length];
+
+    return next == '\0' || isspace(next);
 }
 
 static void
