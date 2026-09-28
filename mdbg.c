@@ -21,6 +21,7 @@
     fprintf(stdout, "NOT IMPLEMENTED:%d: %s\n", __LINE__, arg);
 
 const char *prompt = "(mdbg) ";
+const char *debuggee_path = NULL;
 
 typedef enum {
     INVALID = -1,
@@ -89,6 +90,7 @@ static bool cleanup(pid_t pid);
 static void continue_execution(void);
 static void wait_for_debuggee(pid_t pid);
 static bool kill_debuggee(void);
+static void handle_command(const char *line);
 
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
@@ -101,6 +103,8 @@ int main(int argc, char **argv)
 
     if (!check_if_elf(argv[1]))
         die("Error: provided file '%s' is not ELF", argv[1]);
+
+    debuggee_path = argv[1];
 
     char line[MAX_LENGTH];
     while (true) {
@@ -118,56 +122,64 @@ int main(int argc, char **argv)
             break;
         }
 
-        if (strlen(line) == 0)
-            continue;
-
-        if (!strcmp(line, "run") || !strcmp(line, "r")) {
-
-            run_program(argv[1]);
-
-        } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
-                   !strcmp(line, "c")) {
-
-            continue_execution();
-
-        } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
-                   !strcmp(line, "b")) {
-            NOT_IMPLEMENTED("breakpoint command");
-        } else if (!strcmp(line, "regs")) {
-            print_registers(g_debuggee_pid);
-        } else if (is_prefix(line, "reg")) {
-
-            char cmd[16];
-            char reg_name[16];
-            sscanf(line, "%15s %15s", cmd, reg_name);
-
-            if (!strcmp(reg_name, "")) {
-                printf("usage: reg <register>\n");
-                continue;
-            }
-
-            print_register_by_name(g_debuggee_pid, reg_name);
-
-        } else if (is_prefix(line, "set")) {
-
-            char cmd[16];
-            char reg_name[16];
-            uint64_t value;
-
-            sscanf(line, "%15s %15s %ld", cmd, reg_name, &value);
-
-            set_register_value(g_debuggee_pid, reg_name, value);
-
-        } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
-
-            (void)kill_debuggee();
-
-        } else {
-            fprintf(stdout, "Unknown command '%s'\n", line);
-        }
+        if (*line != '\0')
+            handle_command(line);
     }
 
     return 0;
+}
+
+static
+void handle_command(const char *line)
+{
+    if (!strcmp(line, "run") || !strcmp(line, "r")) {
+
+        run_program(debuggee_path);
+
+    } else if (!strcmp(line, "continue") || !strcmp(line, "cont") ||
+            !strcmp(line, "c")) {
+
+        continue_execution();
+
+    } else if (!strcmp(line, "breakpoint") || !strcmp(line, "break") ||
+            !strcmp(line, "b")) {
+
+        NOT_IMPLEMENTED("breakpoint command");
+
+    } else if (!strcmp(line, "regs")) {
+
+        print_registers(g_debuggee_pid);
+
+    } else if (is_prefix(line, "reg")) {
+
+        char cmd[16];
+        char reg_name[16];
+        sscanf(line, "%15s %15s", cmd, reg_name);
+
+        if (!strcmp(reg_name, "")) {
+            printf("usage: reg <register>\n");
+            return;
+        }
+
+        print_register_by_name(g_debuggee_pid, reg_name);
+
+    } else if (is_prefix(line, "set")) {
+
+        char cmd[16];
+        char reg_name[16];
+        uint64_t value;
+
+        sscanf(line, "%15s %15s %ld", cmd, reg_name, &value);
+
+        set_register_value(g_debuggee_pid, reg_name, value);
+
+    } else if (!strcmp(line, "kill") || !strcmp(line, "k")) {
+
+        (void)kill_debuggee();
+
+    } else {
+        fprintf(stdout, "Unknown command '%s'\n", line);
+    }
 }
 
 static void
