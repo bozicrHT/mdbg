@@ -105,6 +105,7 @@ static bool process_is_stopped();
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
 static bool is_command(const char *line, const char *command);
+static void help(void);
 
 int main(int argc, char **argv)
 {
@@ -190,6 +191,11 @@ void handle_command(const char *line)
     if (is_command(line, "kill") ||
         is_command(line, "k")) {
         (void)kill_debuggee();
+        return;
+    }
+
+    if (is_command(line, "help")) {
+        help();
         return;
     }
 
@@ -535,4 +541,18 @@ die(const char *fmt, ...)
 
     fputc('\n', stderr);
     exit(1);
+}
+
+static
+void help(void)
+{
+    printf("List of supported commands:\n\n"
+            "help                 -- Print this help.\n"
+            "run, r               -- Start debugged program.\n"
+            "continue, c          -- Continue program being debugged.\n"
+            "breakpoint, break, b -- Set breakpoint at specific location.\n"
+            "regs                 -- List all of the registers and their contents.\n"
+            "reg <register>       -- List the content of the given register.\n"
+            "set <register> <val> -- Set value of the specified register.\n"
+            "kill, k              -- Kill execution of program being debugged.\n\n");
 }
