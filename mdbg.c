@@ -83,6 +83,17 @@ static void set_register_value(pid_t pid, const char *reg_name, uint64_t value);
 static uint64_t get_register_value(pid_t pid, Register reg);
 static Register find_register(const char *reg_name);
 
+typedef struct {
+    //uint32_t id;
+    //pid_t pid;
+    //bool enabled;
+
+    uint8_t original_byte;
+    intptr_t address;
+} Breakpoint;
+
+Breakpoint g_single_breakpoint = {0};
+
 typedef enum {
     NO_PROCESS,
     RUNNING,
@@ -162,7 +173,48 @@ void handle_command(const char *line)
         is_command(line, "break") ||
         is_command(line, "b")) {
 
-        NOT_IMPLEMENTED("breakpoint command");
+        char cmd[16];
+        uint64_t addr;
+
+        int n = sscanf(line, "%15s %lx", cmd, &addr);
+        if (n != 2) {
+            printf("usage: breakpoint <address>\n");
+            return;
+        }
+
+        g_single_breakpoint.address = addr;
+
+        // If the process is not run, and we try to set breakpoints
+        if (!process_is_alive()) {
+            printf("Limitation: `run` the process first!\n");
+            return;
+        }
+
+        errno = 0;
+        // 1. Get the 64 bits at the given address
+        long data = ptrace(PTRACE_PEEKDATA, g_debuggee_pid,
+                           g_single_breakpoint.address, NULL);
+        if (data == -1 && errno != 0) {
+            printf("Reading instruction failed: %s\n", strerror(errno));
+            return;
+        }
+
+        // Save the original byte first
+        g_single_breakpoint.original_byte = (uint8_t)(data & 0xFF);
+
+        // Replace first byte with INT3 = 0xCC
+        long patched = (data & ~0xFFL) | 0xCC;
+
+        errno = 0;
+        if (ptrace(PTRACE_POKEDATA, g_debuggee_pid,
+                   (void *)g_single_breakpoint.address,
+                   (void *)patched) < 0) {
+            printf("Error: POKEDATA failed %s\n", strerror(errno));
+            return;
+        }
+
+        printf("Setting breakpoint on address: %#lx\n", addr);
+
         return;
     }
 

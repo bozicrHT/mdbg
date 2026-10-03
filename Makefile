@@ -9,4 +9,4 @@ $(OUT): $(IN)
 .PHONY: test
 
 test: test.c
-	$(CC) -g $< -o $@
+	$(CC) -g -no-pie $< -o $@
