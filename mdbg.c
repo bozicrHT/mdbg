@@ -122,8 +122,10 @@ int main(int argc, char **argv)
         fputs(prompt, stdout);
 
         char *ret = fgets(line, sizeof(line), stdin);
-        if (!ret)
+        if (!ret) {
+            // FIXME: pressing CTRL-D while program is running.
             break;
+        }
 
         line[strcspn(line, "\n")] = '\0';
 
@@ -475,7 +477,7 @@ static
 bool parse_register_command(const char *line, char *reg_name)
 {
     char cmd[16];
-    size_t n = sscanf(line, "%15s %15s", cmd, reg_name);
+    int n = sscanf(line, "%15s %15s", cmd, reg_name);
 
     if (!strcmp(reg_name, "") || n != 2) {
         printf("usage: reg <register>\n");
