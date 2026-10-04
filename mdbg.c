@@ -97,7 +97,7 @@ static bool install_breakpoint(void);
 static bool enable_breakpoint(intptr_t address);
 static bool disable_breakpoint();
 static void step_over_breakpoint(void);
-static void print_if_hit_breakpoint(pid_t pid);
+static bool print_if_hit_breakpoint(pid_t pid);
 
 typedef enum {
     NO_PROCESS,
@@ -249,8 +249,8 @@ wait_for_debuggee(pid_t pid)
         int sig = WSTOPSIG(status);
 
         if (sig == SIGTRAP) {
-            print_if_hit_breakpoint(pid);
-            return;
+            if (print_if_hit_breakpoint(pid))
+                return;
         }
 
 
@@ -517,7 +517,9 @@ static
 bool install_breakpoint(void)
 {
     errno = 0;
-    // 1. Get the 64 bits at the given address
+    // ------------------------------------ //
+    // Get the 64 bits at the given address //
+    // ------------------------------------ //
     long data = ptrace(PTRACE_PEEKDATA, g_debuggee_pid,
             g_single_breakpoint.address, NULL);
     if (data == -1 && errno != 0) {
@@ -621,11 +623,11 @@ void step_over_breakpoint(void)
 }
 
 static
-void print_if_hit_breakpoint(pid_t pid)
+bool print_if_hit_breakpoint(pid_t pid)
 {
     struct user_regs_struct regs;
     if (!get_registers(pid, &regs))
-        return;
+        return false;
 
     intptr_t breakpoint_address = (intptr_t)regs.rip - 1;
     if (g_single_breakpoint.enabled &&
@@ -634,7 +636,10 @@ void print_if_hit_breakpoint(pid_t pid)
                 (unsigned long)g_single_breakpoint.address);
 
         g_pstate = STOPPED;
+        return true;
     }
+
+    return false;
 }
 
 static

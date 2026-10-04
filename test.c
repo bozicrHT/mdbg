@@ -2,6 +2,7 @@
 
 int sum(int a, int b)
 {
+    asm("int3");
     int sum = 0;
     for (int i = a; i <= b; i++)
         sum += i;
