@@ -86,13 +86,18 @@ static Register find_register(const char *reg_name);
 typedef struct {
     //uint32_t id;
     //pid_t pid;
-    //bool enabled;
 
+    bool enabled;
     uint8_t original_byte;
     intptr_t address;
 } Breakpoint;
 
 Breakpoint g_single_breakpoint = {0};
+static bool install_breakpoint(void);
+static bool enable_breakpoint(intptr_t address);
+static bool disable_breakpoint();
+static void step_over_breakpoint(void);
+static void print_if_hit_breakpoint(pid_t pid);
 
 typedef enum {
     NO_PROCESS,
@@ -182,38 +187,8 @@ void handle_command(const char *line)
             return;
         }
 
-        g_single_breakpoint.address = addr;
-
-        // If the process is not run, and we try to set breakpoints
-        if (!process_is_alive()) {
-            printf("Limitation: `run` the process first!\n");
-            return;
-        }
-
-        errno = 0;
-        // 1. Get the 64 bits at the given address
-        long data = ptrace(PTRACE_PEEKDATA, g_debuggee_pid,
-                           g_single_breakpoint.address, NULL);
-        if (data == -1 && errno != 0) {
-            printf("Reading instruction failed: %s\n", strerror(errno));
-            return;
-        }
-
-        // Save the original byte first
-        g_single_breakpoint.original_byte = (uint8_t)(data & 0xFF);
-
-        // Replace first byte with INT3 = 0xCC
-        long patched = (data & ~0xFFL) | 0xCC;
-
-        errno = 0;
-        if (ptrace(PTRACE_POKEDATA, g_debuggee_pid,
-                   (void *)g_single_breakpoint.address,
-                   (void *)patched) < 0) {
-            printf("Error: POKEDATA failed %s\n", strerror(errno));
-            return;
-        }
-
-        printf("Setting breakpoint on address: %#lx\n", addr);
+        if (enable_breakpoint(addr))
+            printf("Setting breakpoint on address: %#lx\n", addr);
 
         return;
     }
@@ -272,8 +247,16 @@ wait_for_debuggee(pid_t pid)
 
     if (WIFSTOPPED(status)) {
         int sig = WSTOPSIG(status);
+
+        if (sig == SIGTRAP) {
+            print_if_hit_breakpoint(pid);
+            return;
+        }
+
+
         printf("[Inferior (%d) stopped by signal %d (%s)]\n",
                 pid, sig, sigabbrev_np(sig));
+
         g_pstate = STOPPED;
         return;
     }
@@ -288,6 +271,8 @@ continue_execution(void)
         fprintf(stdout, "Inferior is not stopped.\n");
         return;
     }
+
+    step_over_breakpoint();
 
     if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
         die("Error: PTRACE_CONT failed in '%s'", __func__);
@@ -343,11 +328,14 @@ run_program(void)
 
     g_debuggee_pid = launch(debuggee_path);
 
+    // Install breakpoints that were requested before run.
+    if (g_single_breakpoint.address != 0)
+        install_breakpoint();
+
     if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
         die("Error: PTRACE_CONT failed in '%s'", __func__);
 
     g_pstate = RUNNING;
-
     wait_for_debuggee(g_debuggee_pid);
 }
 
@@ -523,6 +511,130 @@ void set_register_value(pid_t pid, const char *reg_name, uint64_t value)
         return;
 
     printf("Register '%s' set to %ld\n", reg_name, value);
+}
+
+static
+bool install_breakpoint(void)
+{
+    errno = 0;
+    // 1. Get the 64 bits at the given address
+    long data = ptrace(PTRACE_PEEKDATA, g_debuggee_pid,
+            g_single_breakpoint.address, NULL);
+    if (data == -1 && errno != 0) {
+        printf("Reading instruction failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    // Save the original byte first
+    g_single_breakpoint.original_byte = (uint8_t)(data & 0xFF);
+
+    // Replace first byte with INT3 = 0xCC
+    long patched = (data & ~0xFFL) | 0xCC;
+
+    errno = 0;
+    if (ptrace(PTRACE_POKEDATA, g_debuggee_pid,
+                (void *)g_single_breakpoint.address,
+                (void *)patched) < 0) {
+        printf("Error: POKEDATA failed %s\n", strerror(errno));
+        return false;
+    }
+
+    return true;
+}
+
+static
+bool enable_breakpoint(intptr_t address)
+{
+    g_single_breakpoint.address = address;
+    g_single_breakpoint.enabled = true;
+
+    if (!process_is_alive())
+        return true;
+
+    return install_breakpoint();
+}
+
+static bool disable_breakpoint()
+{
+    // ----------- //
+    // Remove int3 //
+    // ----------- //
+    errno = 0;
+    long data = ptrace(PTRACE_PEEKDATA,
+                       g_debuggee_pid,
+                       (void *)g_single_breakpoint.address,
+                       NULL);
+
+    if (data == -1 && errno != 0) {
+        printf("Error: PTRACE_PEEKDATA failed %s\n", strerror(errno));
+        return false;
+    }
+
+    long restored = (data & ~0xFFL) | g_single_breakpoint.original_byte;
+    if (ptrace(PTRACE_POKEDATA, g_debuggee_pid,
+                (void *)g_single_breakpoint.address,
+                (void *)restored) < 0) {
+        printf("Error: PTRACE_POKEDATA failed %s", strerror(errno));
+        return false;
+    }
+
+    g_single_breakpoint.enabled = false;
+
+    return true;
+}
+
+static
+void step_over_breakpoint(void)
+{
+    struct user_regs_struct regs;
+    if (!get_registers(g_debuggee_pid, &regs))
+        return;
+
+    intptr_t possible_breakpoint_loc = regs.rip - 1;
+
+    if (!g_single_breakpoint.enabled ||
+            possible_breakpoint_loc != g_single_breakpoint.address)
+        return;
+
+    if (!disable_breakpoint())
+        return;
+
+    // ------------------------------------- //
+    // Move RIP back to the INT3 instruction //
+    // ------------------------------------- //
+    regs.rip--;
+    if (!set_registers(g_debuggee_pid, &regs))
+        return;
+
+    // -------------------------------- //
+    // Single-step original instruction //
+    // -------------------------------- //
+    if (ptrace(PTRACE_SINGLESTEP, g_debuggee_pid, NULL, NULL) < 0)
+        die("Error: PTRACE_SINGLESTEP failed");
+
+    // Wait silently
+    if (waitpid(g_debuggee_pid, 0, 0) < 0)
+        die("Error: waitpid failed during single-step");
+
+    g_pstate = STOPPED; // Single step leaves process stopped
+    enable_breakpoint(g_single_breakpoint.address);
+}
+
+static
+void print_if_hit_breakpoint(pid_t pid)
+{
+    struct user_regs_struct regs;
+    if (!get_registers(pid, &regs))
+        return;
+
+    intptr_t breakpoint_address = (intptr_t)regs.rip - 1;
+    if (g_single_breakpoint.enabled &&
+            breakpoint_address == g_single_breakpoint.address) {
+        printf("\n\tBreakpoint hit at 0x%lx\n\n",
+                (unsigned long)g_single_breakpoint.address);
+
+        g_pstate = STOPPED;
+    }
 }
 
 static
