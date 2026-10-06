@@ -84,7 +84,6 @@ static uint64_t get_register_value(pid_t pid, Register reg);
 static Register find_register(const char *reg_name);
 
 typedef struct {
-    //uint32_t id;
     //pid_t pid;
 
     bool enabled;
@@ -92,10 +91,15 @@ typedef struct {
     intptr_t address;
 } Breakpoint;
 
-Breakpoint g_single_breakpoint = {0};
-static bool install_breakpoint(void);
-static bool enable_breakpoint(intptr_t address);
-static bool disable_breakpoint();
+#define MAX_BREAKPOINTS 64
+Breakpoint    g_breakpoints[MAX_BREAKPOINTS] = {0};
+static size_t g_breakpoint_count = 0;
+
+static Breakpoint *find_breakpoint(intptr_t addr);
+static bool install_breakpoint(Breakpoint *bp);
+static bool add_breakpoint(intptr_t address);
+static bool disable_breakpoint(Breakpoint *bp);
+static bool enable_breakpoint(Breakpoint *bp);
 static void step_over_breakpoint(void);
 static bool print_if_hit_breakpoint(pid_t pid);
 
@@ -187,7 +191,18 @@ void handle_command(const char *line)
             return;
         }
 
-        if (enable_breakpoint(addr))
+        if (find_breakpoint((intptr_t)addr)) {
+            printf("There is already breakpoint at address %#lx\n", addr);
+            return;
+        }
+
+        if (g_breakpoint_count >= MAX_BREAKPOINTS) {
+            printf("Maximum number of breakpoints (%d) reached\n",
+                    MAX_BREAKPOINTS);
+            return;
+        }
+
+        if (add_breakpoint(addr))
             printf("Setting breakpoint on address: %#lx\n", addr);
 
         return;
@@ -329,8 +344,15 @@ run_program(void)
     g_debuggee_pid = launch(debuggee_path);
 
     // Install breakpoints that were requested before run.
-    if (g_single_breakpoint.address != 0)
-        install_breakpoint();
+    for (size_t i = 0; i < g_breakpoint_count; i++) {
+        Breakpoint *bp = &g_breakpoints[i];
+
+        if (!bp->enabled)
+            continue;
+
+        // FIXME: handle error
+        (void)install_breakpoint(bp);
+    }
 
     if (ptrace(PTRACE_CONT, g_debuggee_pid, NULL, NULL) < 0)
         die("Error: PTRACE_CONT failed in '%s'", __func__);
@@ -514,28 +536,28 @@ void set_register_value(pid_t pid, const char *reg_name, uint64_t value)
 }
 
 static
-bool install_breakpoint(void)
+bool install_breakpoint(Breakpoint *bp)
 {
     errno = 0;
     // ------------------------------------ //
     // Get the 64 bits at the given address //
     // ------------------------------------ //
     long data = ptrace(PTRACE_PEEKDATA, g_debuggee_pid,
-            g_single_breakpoint.address, NULL);
+            bp->address, NULL);
     if (data == -1 && errno != 0) {
         printf("Reading instruction failed: %s\n", strerror(errno));
         return false;
     }
 
     // Save the original byte first
-    g_single_breakpoint.original_byte = (uint8_t)(data & 0xFF);
+    bp->original_byte = (uint8_t)(data & 0xFF);
 
     // Replace first byte with INT3 = 0xCC
     long patched = (data & ~0xFFL) | 0xCC;
 
     errno = 0;
     if (ptrace(PTRACE_POKEDATA, g_debuggee_pid,
-                (void *)g_single_breakpoint.address,
+                (void *)bp->address,
                 (void *)patched) < 0) {
         printf("Error: POKEDATA failed %s\n", strerror(errno));
         return false;
@@ -545,18 +567,34 @@ bool install_breakpoint(void)
 }
 
 static
-bool enable_breakpoint(intptr_t address)
+bool enable_breakpoint(Breakpoint *bp)
 {
-    g_single_breakpoint.address = address;
-    g_single_breakpoint.enabled = true;
+    if (!install_breakpoint(bp))
+        return false;
+
+    bp->enabled = true;
+    return true;
+}
+
+static
+bool add_breakpoint(intptr_t address)
+{
+    Breakpoint *bp = &g_breakpoints[g_breakpoint_count];
+
+    bp->address = address;
+    bp->enabled = true;
+
+    g_breakpoint_count++;
 
     if (!process_is_alive())
         return true;
 
-    return install_breakpoint();
+    // XXX: Maybe it should be:
+    //       return enable_breakpoint(bp);
+    return install_breakpoint(bp);
 }
 
-static bool disable_breakpoint()
+static bool disable_breakpoint(Breakpoint *bp)
 {
     // ----------- //
     // Remove int3 //
@@ -564,7 +602,7 @@ static bool disable_breakpoint()
     errno = 0;
     long data = ptrace(PTRACE_PEEKDATA,
                        g_debuggee_pid,
-                       (void *)g_single_breakpoint.address,
+                       (void *)bp->address,
                        NULL);
 
     if (data == -1 && errno != 0) {
@@ -572,15 +610,15 @@ static bool disable_breakpoint()
         return false;
     }
 
-    long restored = (data & ~0xFFL) | g_single_breakpoint.original_byte;
+    long restored = (data & ~0xFFL) | bp->original_byte;
     if (ptrace(PTRACE_POKEDATA, g_debuggee_pid,
-                (void *)g_single_breakpoint.address,
+                (void *)bp->address,
                 (void *)restored) < 0) {
         printf("Error: PTRACE_POKEDATA failed %s", strerror(errno));
         return false;
     }
 
-    g_single_breakpoint.enabled = false;
+    bp->enabled = false;
 
     return true;
 }
@@ -594,11 +632,11 @@ void step_over_breakpoint(void)
 
     intptr_t possible_breakpoint_loc = regs.rip - 1;
 
-    if (!g_single_breakpoint.enabled ||
-            possible_breakpoint_loc != g_single_breakpoint.address)
+    Breakpoint *bp = find_breakpoint(possible_breakpoint_loc);
+    if (!bp)
         return;
 
-    if (!disable_breakpoint())
+    if (!disable_breakpoint(bp))
         return;
 
     // ------------------------------------- //
@@ -619,7 +657,21 @@ void step_over_breakpoint(void)
         die("Error: waitpid failed during single-step");
 
     g_pstate = STOPPED; // Single step leaves process stopped
-    enable_breakpoint(g_single_breakpoint.address);
+
+    if (!enable_breakpoint(bp))
+        printf("Failed to re-install breakpoint at %#lx\n",
+                bp->address);
+}
+
+static
+Breakpoint *find_breakpoint(intptr_t addr)
+{
+    for (size_t i = 0; i < g_breakpoint_count; i++)
+        if (g_breakpoints[i].enabled &&
+                g_breakpoints[i].address == addr)
+            return &g_breakpoints[i];
+
+    return NULL;
 }
 
 static
@@ -630,10 +682,10 @@ bool print_if_hit_breakpoint(pid_t pid)
         return false;
 
     intptr_t breakpoint_address = (intptr_t)regs.rip - 1;
-    if (g_single_breakpoint.enabled &&
-            breakpoint_address == g_single_breakpoint.address) {
+    Breakpoint *bp = find_breakpoint(breakpoint_address);
+    if (bp && bp->enabled) {
         printf("\n\tBreakpoint hit at 0x%lx\n\n",
-                (unsigned long)g_single_breakpoint.address);
+                (unsigned long)bp->address);
 
         g_pstate = STOPPED;
         return true;
