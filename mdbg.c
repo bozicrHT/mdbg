@@ -122,6 +122,7 @@ static void handle_command(const char *line);
 static bool process_is_alive();
 static bool process_is_stopped();
 
+static bool parse_uint64(const char *text, int base, uint64_t *value);
 static void die(const char *fmt, ...);
 static bool check_if_elf(const char *file_path);
 static bool is_command(const char *line, const char *command);
@@ -182,12 +183,23 @@ void handle_command(const char *line)
         is_command(line, "break") ||
         is_command(line, "b")) {
 
-        char cmd[16];
-        uint64_t addr;
+        char cmd[16], location[64];
 
-        int n = sscanf(line, "%15s %lx", cmd, &addr);
+        int n = sscanf(line, "%15s %63s", cmd, location);
         if (n != 2) {
-            printf("usage: breakpoint <address>\n");
+            printf("usage: breakpoint *<address>\n");
+            return;
+        }
+
+        uint64_t addr;
+        if (location[0] == '*') {
+            if (!parse_uint64(location+1, 0, &addr)) {
+                printf("Invalid breakpoint address '%s'\n", location+1);
+                return;
+            }
+        } else {
+            puts("TODO: Source line breakpoints are not yet implemented.");
+            puts(" Try: breakpoint *<address>");
             return;
         }
 
@@ -739,6 +751,22 @@ bool process_is_stopped()
 }
 
 static
+bool parse_uint64(const char *text, int base, uint64_t *value)
+{
+    if (*text == '\0' || *text == '-')
+        return false;
+
+    errno = 0;
+    char *end;
+    uint64_t parsed = strtoull(text, &end, base);
+    if (errno == ERANGE || *end != '\0' || parsed > UINT64_MAX)
+        return false;
+
+    *value = parsed;
+    return true;
+}
+
+static
 bool is_command(const char *line, const char *command)
 {
     while (isspace(*line))
@@ -773,7 +801,7 @@ void help(void)
             "help                 -- Print this help.\n"
             "run, r               -- Start debugged program.\n"
             "continue, c          -- Continue program being debugged.\n"
-            "breakpoint, break, b -- Set breakpoint at specific location.\n"
+            "breakpoint *<addr>   -- Set breakpoint at specific address.\n"
             "regs                 -- List all of the registers and their contents.\n"
             "reg <register>       -- List the content of the given register.\n"
             "set <register> <val> -- Set value of the specified register.\n"
