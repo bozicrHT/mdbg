@@ -596,14 +596,15 @@ bool add_breakpoint(intptr_t address)
     bp->address = address;
     bp->enabled = true;
 
+    if (process_is_alive() && !install_breakpoint(bp)) {
+        /* Installing breakpoint didn't succeed,
+         * so we're resetting it */
+        *bp = (Breakpoint){0};
+        return false;
+    }
+
     g_breakpoint_count++;
-
-    if (!process_is_alive())
-        return true;
-
-    // XXX: Maybe it should be:
-    //       return enable_breakpoint(bp);
-    return install_breakpoint(bp);
+    return true;
 }
 
 static bool disable_breakpoint(Breakpoint *bp)
