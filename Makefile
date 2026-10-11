@@ -1,10 +1,10 @@
 CC		= clang
 CFLAGS	= -Wall -std=gnu11 -Wextra
 OUT		= mdbg
-IN		= mdbg.c
+IN		= mdbg.c dwarf/section-line.c
 
 $(OUT): $(IN)
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 .PHONY: test
 

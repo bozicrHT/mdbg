@@ -16,6 +16,8 @@
 #include <sys/user.h>
 #include <sys/ptrace.h>
 
+#include "dwarf/dwarf.h"
+
 #define MAX_LENGTH  1024
 #define ARRAY_SIZE(x)   (sizeof(x)/sizeof(x[0]))
 #define NOT_IMPLEMENTED(arg) \
@@ -128,6 +130,9 @@ static bool check_if_elf(const char *file_path);
 static bool is_command(const char *line, const char *command);
 static void help(void);
 
+/* XXX: Should not be global */
+Dwarf_Context dwarf_context = {0};
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -137,6 +142,12 @@ int main(int argc, char **argv)
         die("Error: provided file '%s' is not ELF", argv[1]);
 
     debuggee_path = argv[1];
+
+    /* ----------------- */
+    /* DWARF PARSER INIT */
+    /* ----------------- */
+    dwarf_context.path = debuggee_path;
+    dwarf_init_context(&dwarf_context);
 
     char line[MAX_LENGTH];
     while (true) {
@@ -187,20 +198,27 @@ void handle_command(const char *line)
 
         int n = sscanf(line, "%15s %63s", cmd, location);
         if (n != 2) {
-            printf("usage: breakpoint *<address>\n");
+            printf("usage: breakpoint <line> | breakpoint *<address>\n");
             return;
         }
 
-        uint64_t addr;
+        uint64_t addr, line_number;
         if (location[0] == '*') {
             if (!parse_uint64(location+1, 0, &addr)) {
                 printf("Invalid breakpoint address '%s'\n", location+1);
                 return;
             }
         } else {
-            puts("TODO: Source line breakpoints are not yet implemented.");
-            puts(" Try: breakpoint *<address>");
-            return;
+            if (!parse_uint64(location, 10, &line_number) ||
+                    line_number == 0 || line_number > UINT64_MAX) {
+                printf("Invalid line number '%s'\n", location);
+                return;
+            }
+
+            if (!dwarf_line_to_address(&dwarf_context, line_number, &addr)) {
+                printf("Could not find an address for source line %lu\n", line_number);
+                return;
+            }
         }
 
         if (find_breakpoint((intptr_t)addr)) {
@@ -803,6 +821,7 @@ void help(void)
             "run, r               -- Start debugged program.\n"
             "continue, c          -- Continue program being debugged.\n"
             "breakpoint *<addr>   -- Set breakpoint at specific address.\n"
+            "breakpoint <line>    -- Set breakpoint at specific source line.\n"
             "regs                 -- List all of the registers and their contents.\n"
             "reg <register>       -- List the content of the given register.\n"
             "set <register> <val> -- Set value of the specified register.\n"
