@@ -86,6 +86,12 @@ static uint64_t get_register_value(pid_t pid, Register reg);
 static Register find_register(const char *reg_name);
 
 typedef struct {
+    bool is_source_location;
+    uint64_t address;
+    uint64_t line_number;
+} Breakpoint_Location;
+
+typedef struct {
     //pid_t pid;
 
     bool enabled;
@@ -104,6 +110,8 @@ static bool disable_breakpoint(Breakpoint *bp);
 static bool enable_breakpoint(Breakpoint *bp);
 static void step_over_breakpoint(void);
 static bool print_if_hit_breakpoint(pid_t pid);
+static bool parse_break_command(const char *line, char *location);
+static bool parse_break_location(const char *location, Breakpoint_Location *bp_loc);
 
 typedef enum {
     NO_PROCESS,
@@ -194,46 +202,27 @@ void handle_command(const char *line)
         is_command(line, "break") ||
         is_command(line, "b")) {
 
-        char cmd[16], location[64];
+        char location[64];
+        if (!parse_break_command(line, location))
+            return;
 
-        int n = sscanf(line, "%15s %63s", cmd, location);
-        if (n != 2) {
-            printf("usage: breakpoint <line> | breakpoint *<address>\n");
+        Breakpoint_Location bp_loc = {0};
+        if (!parse_break_location(location, &bp_loc))
+            return;
+
+        if (find_breakpoint((intptr_t)bp_loc.address)) {
+            printf("There is already breakpoint at address %#lx\n", bp_loc.address);
             return;
         }
 
-        uint64_t addr, line_number;
-        if (location[0] == '*') {
-            if (!parse_uint64(location+1, 0, &addr)) {
-                printf("Invalid breakpoint address '%s'\n", location+1);
-                return;
-            }
-        } else {
-            if (!parse_uint64(location, 10, &line_number) ||
-                    line_number == 0 || line_number > UINT64_MAX) {
-                printf("Invalid line number '%s'\n", location);
-                return;
-            }
-
-            if (!dwarf_line_to_address(&dwarf_context, line_number, &addr)) {
-                printf("Could not find an address for source line %lu\n", line_number);
-                return;
-            }
-        }
-
-        if (find_breakpoint((intptr_t)addr)) {
-            printf("There is already breakpoint at address %#lx\n", addr);
+        if (!add_breakpoint((intptr_t)bp_loc.address))
             return;
-        }
 
-        if (g_breakpoint_count >= MAX_BREAKPOINTS) {
-            printf("Maximum number of breakpoints (%d) reached\n",
-                    MAX_BREAKPOINTS);
-            return;
-        }
-
-        if (add_breakpoint(addr))
-            printf("Setting breakpoint on address: %#lx\n", addr);
+        if (bp_loc.is_source_location)
+            printf("Breakpoint set at line %lu (%#lx)\n",
+                    bp_loc.line_number, bp_loc.address);
+        else
+            printf("Breakpoint set at address %#lx\n", bp_loc.address);
 
         return;
     }
@@ -609,6 +598,12 @@ bool enable_breakpoint(Breakpoint *bp)
 static
 bool add_breakpoint(intptr_t address)
 {
+    if (g_breakpoint_count >= MAX_BREAKPOINTS) {
+        printf("Maximum number of breakpoints (%d) reached\n",
+                MAX_BREAKPOINTS);
+        return false;
+    }
+
     Breakpoint *bp = &g_breakpoints[g_breakpoint_count];
 
     bp->address = address;
@@ -752,6 +747,51 @@ bool parse_set_command(const char *line, char *reg_name, uint64_t *value)
     }
 
     reg_name[strlen(reg_name)] = '\0';
+
+    return true;
+}
+
+static
+bool parse_break_command(const char *line, char *location)
+{
+    char cmd[16];
+
+    int n = sscanf(line, "%15s %63s", cmd, location);
+    if (n != 2) {
+        printf("usage: breakpoint <line> | breakpoint *<address>\n");
+        return false;
+    }
+
+    return true;
+}
+
+static
+bool parse_break_location(const char *location, Breakpoint_Location *bp_loc)
+{
+    if (location[0] == '*') {
+        if (!parse_uint64(location+1, 0, &bp_loc->address)) {
+            printf("Invalid breakpoint address '%s'\n", location+1);
+            return false;
+        }
+
+        bp_loc->is_source_location = true;
+        return true;
+    }
+
+    uint64_t line_number;
+    if (!parse_uint64(location, 10, &line_number) ||
+            line_number == 0 || line_number > UINT64_MAX) {
+        printf("Invalid line number '%s'\n", location);
+        return false;
+    }
+
+    if (!dwarf_line_to_address(&dwarf_context, line_number, &bp_loc->address)) {
+        printf("Could not find an address for source line %lu\n", line_number);
+        return false;
+    }
+
+    bp_loc->line_number = line_number;
+    bp_loc->is_source_location = true;
 
     return true;
 }
