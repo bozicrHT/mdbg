@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/user.h>
 #include <sys/ptrace.h>
@@ -103,6 +105,9 @@ static bool enable_breakpoint(Breakpoint *bp);
 static void step_over_breakpoint(void);
 static bool print_if_hit_breakpoint(pid_t pid);
 
+static const char *find_function_name(uint64_t address);
+static void print_backtrace(pid_t pid);
+
 typedef enum {
     NO_PROCESS,
     RUNNING,
@@ -127,6 +132,20 @@ static bool check_if_elf(const char *file_path);
 static bool is_command(const char *line, const char *command);
 static void help(void);
 
+typedef struct {
+    const char *name;
+    uint64_t start;
+    unsigned char type;
+    size_t size;
+} Symbol;
+
+Symbol *symbols = {0};
+size_t num_symbols = 0;
+
+void read_eheader(Elf64_Ehdr *ehdr, int fd);
+uint8_t *map_file(int fd);
+static void get_symbols_from_elf(void);
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -136,6 +155,9 @@ int main(int argc, char **argv)
         die("Error: provided file '%s' is not ELF", argv[1]);
 
     debuggee_path = argv[1];
+
+    /* It reads symbol table into global variable */
+    get_symbols_from_elf();
 
     char line[MAX_LENGTH];
     while (true) {
@@ -160,7 +182,29 @@ int main(int argc, char **argv)
             handle_command(line);
     }
 
+    free(symbols);
+
     return 0;
+}
+
+void read_eheader(Elf64_Ehdr *ehdr, int fd)
+{
+    if (read(fd, ehdr, sizeof(Elf64_Ehdr)) != sizeof(*ehdr)) {
+        close(fd);
+        die("Error: reading elf header failed");
+    }
+}
+
+uint8_t *map_file(int fd)
+{
+    struct stat st;
+    if (fstat(fd, &st))
+        die("Error: fstat failed");
+
+    uint8_t *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+
+    return map;
 }
 
 static
@@ -205,6 +249,13 @@ void handle_command(const char *line)
         if (add_breakpoint(addr))
             printf("Setting breakpoint on address: %#lx\n", addr);
 
+        return;
+    }
+
+    if (is_command(line, "backtrace") ||
+        is_command(line, "bt")) {
+
+        print_backtrace(g_debuggee_pid);
         return;
     }
 
@@ -692,6 +743,142 @@ bool print_if_hit_breakpoint(pid_t pid)
     }
 
     return false;
+}
+
+static
+void get_symbols_from_elf(void)
+{
+    int fd;
+    if ((fd = open(debuggee_path, O_RDONLY)) < 0)
+        die("Error: open failed");
+
+    Elf64_Ehdr ehdr;
+    read_eheader(&ehdr, fd);
+    uint8_t *ptr = map_file(fd);
+
+    /* Section Header */
+    Elf64_Shdr *shdr = (Elf64_Shdr *)(ptr + ehdr.e_shoff);
+    uint8_t *strtab = ptr + shdr[ehdr.e_shstrndx].sh_offset;
+
+    __attribute__((unused))
+    const uint8_t *beg = NULL;
+    __attribute__((unused))
+    size_t section_size;
+    int symtab_idx = -1;
+
+    for (size_t i = 0; i < ehdr.e_shnum; i++) {
+        const char *name = (const char *)strtab + shdr[i].sh_name;
+        if (!strcmp(name, ".symtab")) {
+            beg = ptr + shdr[i].sh_offset;
+            section_size = shdr[i].sh_size;
+            symtab_idx = i;
+            break;
+        }
+    }
+
+    if (symtab_idx < 0)
+        die("Error: No .symtab found");
+
+    Elf64_Shdr  *sym_shdr = &shdr[symtab_idx];
+    Elf64_Sym *symtab =  (Elf64_Sym *)(ptr + sym_shdr->sh_offset);
+    size_t nsyms = sym_shdr->sh_size / sizeof(Elf64_Sym);
+
+    /* Get associated string table */
+    Elf64_Shdr *str_shdr = &shdr[sym_shdr->sh_link];
+    strtab = (uint8_t *)(ptr + str_shdr->sh_offset);
+
+    symbols = calloc(nsyms, sizeof(*symbols));
+    if (!symbols)
+        die("Error: buy more RAM");
+
+    for (size_t i = 0; i < nsyms; i++) {
+        Elf64_Sym *sym = &symtab[i];
+        if (ELF32_ST_TYPE(sym->st_info) != STT_FUNC)
+            continue;
+
+        const char *name = (const char *)strtab + sym->st_name;
+
+        symbols[num_symbols++] = (Symbol) {
+            .name = name,
+            .start = sym->st_value,
+            .size = sym->st_size,
+        };
+    }
+}
+
+static
+bool read_word(pid_t pid, uint64_t address, uint64_t *value)
+{
+    errno = 0;
+    long word = ptrace(PTRACE_PEEKDATA, pid, (void *)address, NULL);
+    if (word == -1 && errno != 0)
+        return false;
+
+    *value = (uint64_t)word;
+    return true;
+}
+
+static
+void print_backtrace(pid_t pid)
+{
+#define MAX_FRAMES  20
+
+    if (!process_is_stopped()) {
+        printf("Program must be stopped.\n");
+        return;
+    }
+
+    struct user_regs_struct regs;
+    if (!get_registers(pid, &regs))
+        return;
+
+    uint64_t frame_pointer = regs.rbp;
+
+    /// If you print regs.rbp, you're printing a memory address pointing to the
+    /// current stack frame, not a return address. GDB generally displays
+    /// function names and return addresses in backtraces, not frame pointers.
+    printf("#0   %s ()\n",
+            find_function_name(regs.rip));
+
+    for (size_t frame = 1; frame < MAX_FRAMES; frame++) {
+        if (frame_pointer == 0)
+            return;
+
+        uint64_t previous_frame_pointer;
+        if (!read_word(pid, frame_pointer, &previous_frame_pointer))
+            return;
+
+        uint64_t return_address_location = frame_pointer + sizeof(uint64_t);
+        uint64_t return_address;
+        if (!read_word(pid, return_address_location, &return_address))
+            return;
+
+        if (return_address == 0)
+            return;
+
+        const char *fn_name = find_function_name(return_address);
+        printf("#%zu   %#016lx in %s ()\n", frame, return_address, fn_name);
+        if (previous_frame_pointer <= frame_pointer)
+            return;
+
+        frame_pointer = previous_frame_pointer;
+    }
+
+
+    printf("Backtrace stopped after %d frames.\n", MAX_FRAMES);
+
+}
+
+static
+const char *find_function_name(uint64_t address)
+{
+    for (size_t i = 0; i < num_symbols; i++) {
+        if (symbols[i].size > 0 &&
+                address >= symbols[i].start &&
+                address - symbols[i].start < symbols[i].size)
+            return symbols[i].name;
+    }
+    return "??";
 }
 
 static
