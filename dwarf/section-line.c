@@ -109,6 +109,8 @@ void dwarf_parse_line_section(Dwarf_Context *ctx);
 /* ------------- */
 /* API Functions */
 /* ------------- */
+
+/* `readelf --debug-dump=decodedline a.out` */
 bool dwarf_line_to_address(const Dwarf_Context *ctx, unsigned int line, uint64_t *address)
 {
     const Dwarf_Line_Rows *table = &ctx->line_rows;
@@ -126,6 +128,31 @@ bool dwarf_line_to_address(const Dwarf_Context *ctx, unsigned int line, uint64_t
     }
 
     return false;
+}
+
+bool dwarf_address_to_line(const Dwarf_Context *ctx, uint64_t address, unsigned int *line)
+{
+    const Dwarf_Line_Rows *table = &ctx->line_rows;
+    const Dwarf_Line_Row  *best  = NULL;
+
+    for (size_t i = 0; i < table->count; i++) {
+        const Dwarf_Line_Row *row = &table->rows[i];
+
+        if (row->end_sequence)
+            continue;
+
+        if (row->address > address)
+            break;
+
+        if (row->is_stmt)
+            best = row;
+    }
+
+    if (!best)
+        return false;
+
+    *line = best->line;
+    return true;
 }
 
 /*********

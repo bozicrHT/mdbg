@@ -93,6 +93,7 @@ typedef struct {
 
 /* PUBLIC INTERFACE FUNCTIONS */
 bool dwarf_line_to_address(const Dwarf_Context *ctx, unsigned int line, uint64_t *address);
+bool dwarf_address_to_line(const Dwarf_Context *ctx, uint64_t address, unsigned int *line);
 void dwarf_init_context(Dwarf_Context *ctx);
 
 #endif // _DWARF_H_
