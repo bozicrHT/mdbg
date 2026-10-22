@@ -129,6 +129,8 @@ static void wait_for_debuggee(pid_t pid);
 static bool kill_debuggee(void);
 static void handle_command(const char *line);
 
+static void next_line(void);
+
 static bool process_is_alive();
 static bool process_is_stopped();
 
@@ -224,6 +226,13 @@ void handle_command(const char *line)
         else
             printf("Breakpoint set at address %#lx\n", bp_loc.address);
 
+        return;
+    }
+
+    if (is_command(line, "next") ||
+        is_command(line, "n")) {
+
+        next_line();
         return;
     }
 
@@ -698,6 +707,64 @@ Breakpoint *find_breakpoint(intptr_t addr)
             return &g_breakpoints[i];
 
     return NULL;
+}
+
+static
+uint64_t get_pc()
+{
+    struct user_regs_struct regs;
+    /* XXX: Assume the get_registers cannot fail! */
+    (void)get_registers(g_debuggee_pid, &regs);
+
+    return regs.rip;
+}
+
+static
+void single_step_instuction()
+{
+    ptrace(PTRACE_SINGLESTEP, g_debuggee_pid, NULL, NULL);
+    if (waitpid(g_debuggee_pid, 0, 0) < 0)
+        die("Error: waitpid failed during single-step");
+    //wait_for_debuggee(g_debuggee_pid);
+}
+
+static __attribute__((unused))
+void single_step_instruction_with_breakpoint_check(void)
+{
+    if (find_breakpoint(get_pc()))
+        step_over_breakpoint();
+    else
+        single_step_instuction();
+}
+
+static
+void next_line(void)
+{
+    if (!process_is_stopped()) {
+        fprintf(stderr, "Debugee must be stopped.\n");
+        return;
+    }
+
+    unsigned int start_line;
+    uint64_t start_pc = get_pc();
+    if (!dwarf_address_to_line(&dwarf_context, start_pc, &start_line)) {
+        fprintf(stderr, "No line information for address: %#lx\n", start_pc);
+        return;
+    }
+
+    while (true) {
+        single_step_instuction();
+        g_pstate = STOPPED;
+
+        uint64_t current_pc = get_pc();
+        unsigned current_line;
+
+        if (!dwarf_address_to_line(&dwarf_context, current_pc, &current_line))
+            continue;
+
+        if (current_line != start_line)
+            return;
+    }
 }
 
 static
