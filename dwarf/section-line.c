@@ -138,21 +138,21 @@ bool dwarf_address_to_line(const Dwarf_Context *ctx, uint64_t address, unsigned 
     for (size_t i = 0; i < table->count; i++) {
         const Dwarf_Line_Row *row = &table->rows[i];
 
-        if (row->end_sequence)
+        if (row->end_sequence) {
+            if (best && address < row->address) {
+                *line = best->line;
+                return true;
+            }
+
+            best = NULL;
             continue;
+        }
 
-        if (row->address > address)
-            break;
-
-        if (row->is_stmt)
+        if (row->address <= address && row->is_stmt)
             best = row;
     }
 
-    if (!best)
-        return false;
-
-    *line = best->line;
-    return true;
+    return false;
 }
 
 /*********
