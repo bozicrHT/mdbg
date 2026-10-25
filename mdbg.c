@@ -710,31 +710,44 @@ Breakpoint *find_breakpoint(intptr_t addr)
 }
 
 static
-uint64_t get_pc()
+bool get_program_counter(uint64_t *pc)
 {
     struct user_regs_struct regs;
-    /* XXX: Assume the get_registers cannot fail! */
-    (void)get_registers(g_debuggee_pid, &regs);
+    if (!get_registers(g_debuggee_pid, &regs))
+        return false;
 
-    return regs.rip;
+    *pc = regs.rip;
+    return true;
 }
 
 static
-void single_step_instuction()
+bool single_step_instuction()
 {
-    ptrace(PTRACE_SINGLESTEP, g_debuggee_pid, NULL, NULL);
-    if (waitpid(g_debuggee_pid, 0, 0) < 0)
+    if (ptrace(PTRACE_SINGLESTEP, g_debuggee_pid, NULL, NULL) < 0) {
+        fprintf(stderr, "Error: PTRACE_SINGLESTEP failed in '%s'\n", __func__);
+        return false;
+    }
+
+    int status;
+    if (waitpid(g_debuggee_pid, &status, 0) < 0)
         die("Error: waitpid failed during single-step");
-    //wait_for_debuggee(g_debuggee_pid);
+
+    if (WIFEXITED(status)) {
+        printf("[Inferior (%d) exited normally (code %d)]\n",
+                g_debuggee_pid, WEXITSTATUS(status));
+        g_pstate = EXITED;
+        return false;
+    }
+
+    g_pstate = STOPPED;
+    return true;
 }
 
 static __attribute__((unused))
 void single_step_instruction_with_breakpoint_check(void)
 {
-    if (find_breakpoint(get_pc()))
-        step_over_breakpoint();
-    else
-        single_step_instuction();
+    //if (find_breakpoint(get_pc())) step_over_breakpoint();
+    //else single_step_instuction();
 }
 
 static
@@ -745,25 +758,39 @@ void next_line(void)
         return;
     }
 
+    uint64_t start_pc;
+    if (!get_program_counter(&start_pc))
+        return;
+
+    // If stopped at a software breakpoint, RIP points one byte past INT3.
+    // Adjust to the breakpoint address for correct source-line lookup.
+    if (start_pc > 0 && find_breakpoint(start_pc - 1))
+        start_pc--;
+
     unsigned int start_line;
-    uint64_t start_pc = get_pc();
     if (!dwarf_address_to_line(&dwarf_context, start_pc, &start_line)) {
         fprintf(stderr, "No line information for address: %#lx\n", start_pc);
         return;
     }
 
+    step_over_breakpoint();
+
     while (true) {
-        single_step_instuction();
-        g_pstate = STOPPED;
+        if (!single_step_instuction())
+            return;
 
-        uint64_t current_pc = get_pc();
+        uint64_t current_pc;
+        if (!get_program_counter(&current_pc))
+            return;
+
         unsigned current_line;
-
         if (!dwarf_address_to_line(&dwarf_context, current_pc, &current_line))
             continue;
 
-        if (current_line != start_line)
+        if (current_line != start_line) {
+            printf("[Stopped at line %u]\n", current_line);
             return;
+        }
     }
 }
 
@@ -929,6 +956,7 @@ void help(void)
             "continue, c          -- Continue program being debugged.\n"
             "breakpoint *<addr>   -- Set breakpoint at specific address.\n"
             "breakpoint <line>    -- Set breakpoint at specific source line.\n"
+            "next, n              -- Continue to the next source line.\n"
             "regs                 -- List all of the registers and their contents.\n"
             "reg <register>       -- List the content of the given register.\n"
             "set <register> <val> -- Set value of the specified register.\n"
