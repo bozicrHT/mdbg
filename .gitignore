@@ -1,6 +1,7 @@
 build/
 mdbg
 test
+test-next
 
 *.o
 *~
