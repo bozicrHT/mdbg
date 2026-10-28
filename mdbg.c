@@ -108,7 +108,7 @@ static bool install_breakpoint(Breakpoint *bp);
 static bool add_breakpoint(intptr_t address);
 static bool disable_breakpoint(Breakpoint *bp);
 static bool enable_breakpoint(Breakpoint *bp);
-static void step_over_breakpoint(void);
+static bool step_over_breakpoint(void);
 static bool print_if_hit_breakpoint(pid_t pid);
 static bool parse_break_command(const char *line, char *location);
 static bool parse_break_location(const char *location, Breakpoint_Location *bp_loc);
@@ -659,27 +659,27 @@ static bool disable_breakpoint(Breakpoint *bp)
 }
 
 static
-void step_over_breakpoint(void)
+bool step_over_breakpoint(void)
 {
     struct user_regs_struct regs;
     if (!get_registers(g_debuggee_pid, &regs))
-        return;
+        return false;
 
     intptr_t possible_breakpoint_loc = regs.rip - 1;
 
     Breakpoint *bp = find_breakpoint(possible_breakpoint_loc);
     if (!bp)
-        return;
+        return false;
 
     if (!disable_breakpoint(bp))
-        return;
+        return false;
 
     // ------------------------------------- //
     // Move RIP back to the INT3 instruction //
     // ------------------------------------- //
     regs.rip--;
     if (!set_registers(g_debuggee_pid, &regs))
-        return;
+        return false;
 
     // -------------------------------- //
     // Single-step original instruction //
@@ -693,9 +693,13 @@ void step_over_breakpoint(void)
 
     g_pstate = STOPPED; // Single step leaves process stopped
 
-    if (!enable_breakpoint(bp))
+    if (!enable_breakpoint(bp)) {
         printf("Failed to re-install breakpoint at %#lx\n",
                 bp->address);
+        return false;
+    }
+
+    return true;
 }
 
 static
@@ -739,6 +743,13 @@ bool single_step_instuction()
         return false;
     }
 
+    if (WIFSTOPPED(status)) {
+        int sig = WSTOPSIG(status);
+        if (sig == SIGTRAP)
+            if (print_if_hit_breakpoint(g_debuggee_pid))
+                return true;
+    }
+
     g_pstate = STOPPED;
     return true;
 }
@@ -762,26 +773,35 @@ void next_line(void)
     if (!get_program_counter(&start_pc))
         return;
 
-    // If stopped at a software breakpoint, RIP points one byte past INT3.
-    // Adjust to the breakpoint address for correct source-line lookup.
-    if (start_pc > 0 && find_breakpoint(start_pc - 1))
-        start_pc--;
-
     unsigned int start_line;
     if (!dwarf_address_to_line(&dwarf_context, start_pc, &start_line)) {
         fprintf(stderr, "No line information for address: %#lx\n", start_pc);
         return;
     }
 
-    step_over_breakpoint();
-
     while (true) {
-        if (!single_step_instuction())
-            return;
-
         uint64_t current_pc;
         if (!get_program_counter(&current_pc))
             return;
+
+        Breakpoint *bp = find_breakpoint((intptr_t)current_pc);
+
+        bool step_status;
+        if (bp)
+            step_status = step_over_breakpoint();
+        else
+            step_status = single_step_instuction();
+
+        if (!step_status)
+            return;
+
+        if (!get_program_counter(&current_pc))
+            return;
+
+        if (find_breakpoint((intptr_t)current_pc)) {
+            single_step_instuction();
+            return;
+        }
 
         unsigned current_line;
         if (!dwarf_address_to_line(&dwarf_context, current_pc, &current_line))
