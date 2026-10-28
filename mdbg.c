@@ -725,7 +725,7 @@ bool get_program_counter(uint64_t *pc)
 }
 
 static
-bool single_step_instuction()
+bool single_step_instruction()
 {
     if (ptrace(PTRACE_SINGLESTEP, g_debuggee_pid, NULL, NULL) < 0) {
         fprintf(stderr, "Error: PTRACE_SINGLESTEP failed in '%s'\n", __func__);
@@ -790,7 +790,7 @@ void next_line(void)
         if (bp)
             step_status = step_over_breakpoint();
         else
-            step_status = single_step_instuction();
+            step_status = single_step_instruction();
 
         if (!step_status)
             return;
@@ -799,7 +799,7 @@ void next_line(void)
             return;
 
         if (find_breakpoint((intptr_t)current_pc)) {
-            single_step_instuction();
+            single_step_instruction();
             return;
         }
 
